@@ -21,11 +21,22 @@ A. you need an OPENAI_API_KEY from   https://platform.openai.com/api-keys
 
 B. Open a terminal using Command Line and execute
 
-poetry install
 
-1. select the venv
-2. change in pyproject.toml the  requires-python = ">=3.12, <4.0.0"
+### Optional
+When we use poetry
 
-poetry add pandas langchain langchain_huggingface langchain_community PyPDF2 langchain_openai openai dotenv sentence-transformers langchain-chroma
 
- 
+the .env file
+
+
+
+GROQ_KEY=<GROQ_KEY>
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_ENDPOINT=https://api.groq.com/openai/v1
+
+HF_TOKEN=<HUGGINGFACE KEY>
+
+#optional
+OPENAI_MODEL=gpt-4o
+OPENAI_API_KEY=<OPENAI_API_KEY>
+
