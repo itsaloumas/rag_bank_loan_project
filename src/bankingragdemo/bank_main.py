@@ -21,7 +21,7 @@ How it works:
 """
 
 import pandas as pd
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
@@ -30,7 +30,11 @@ from PyPDF2 import PdfReader
 import os
 
 embedding_model_name = "sentence-transformers/all-MiniLM-L6-v2"
-embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+embeddings = HuggingFaceEmbeddings(
+    model_name=embedding_model_name,
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True}
+)
 
 # --- 1️⃣ Load loan rules from PDF ---
 def load_loan_rules_from_pdf() -> Chroma:
@@ -87,7 +91,7 @@ def load_customer_data_from_csv() -> Chroma:
 # --- 3️⃣ Define the RAG chain ---
 #llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo")
 import llmapi as sp
-llm = sp.getOpenLLM()
+llm = sp.get_openllm()
 
 # We will retrieve both rules and customer history separately
 vectorstore_rules = load_loan_rules_from_pdf()

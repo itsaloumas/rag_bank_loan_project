@@ -1,0 +1,10 @@
+pandas
+langchain
+langchain_huggingface
+langchain_community
+langchain_openai
+langchain-chroma
+sentence-transformers 
+PyPDF2
+dotenv
+groq
