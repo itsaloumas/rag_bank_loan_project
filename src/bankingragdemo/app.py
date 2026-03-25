@@ -1,13 +1,22 @@
 """
 app.py
-Streamlit UI for the Bank Loan RAG Evaluation System.
-Run with: streamlit run src/bankingragdemo/app.py
+Streamlit web interface for the Bank Loan RAG Evaluation System.
+
+Provides four tabs:
+    1. Evaluate from CSV  -- load or upload applications and evaluate them.
+    2. New Application    -- manual single-applicant form.
+    3. Dashboard          -- summary statistics and charts of past evaluations.
+    4. Ask about Rules    -- RAG-powered Q&A chatbot for bank policies.
+
+Run with:
+    streamlit run src/bankingragdemo/app.py
 """
 
 import sys
 import os
 import tempfile
 
+# Ensure sibling modules (rag_engine, rules_engine, llmapi) are importable
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
@@ -16,39 +25,52 @@ import rag_engine
 import rules_engine
 
 
-# --------------- Cached resources ---------------
+# ---------------------------------------------------------------------------
+# Cached resource loaders (run once and persist across reruns)
+# ---------------------------------------------------------------------------
+
 @st.cache_resource(show_spinner="Loading embeddings model...")
 def get_embeddings():
+    """Initialise the HuggingFace sentence-transformer embedding model."""
     return rag_engine.init_embeddings()
 
 
 @st.cache_resource(show_spinner="Connecting to LLM...")
 def get_llm():
+    """Create the Groq LLM connection."""
     return rag_engine.init_llm()
 
 
 @st.cache_resource(show_spinner="Loading loan rules database...")
 def get_rules_retriever(_embeddings):
+    """Build or load the rules vector store and return a retriever."""
     vs = rag_engine.load_rules_vectorstore(_embeddings)
     return vs.as_retriever()
 
 
 @st.cache_resource(show_spinner="Loading customer history database...")
 def get_customers_retriever(_embeddings):
+    """Build or load the customer history vector store and return a retriever."""
     vs = rag_engine.load_customers_vectorstore(_embeddings)
     return vs.as_retriever()
 
 
-# --------------- Page config ---------------
-st.set_page_config(page_title="Bank Loan Evaluator", page_icon="\U0001f3e6", layout="wide")
+# ---------------------------------------------------------------------------
+# Page configuration
+# ---------------------------------------------------------------------------
+
+st.set_page_config(page_title="Bank Loan Evaluator", layout="wide")
 st.title("Bank Loan Evaluator")
 st.caption("RAG-powered loan application evaluation system")
 
-# --------------- Session state for history ---------------
+# Session state for keeping evaluation history within the current session
 if "evaluation_history" not in st.session_state:
     st.session_state.evaluation_history = []
 
-# --------------- Validate .env ---------------
+# ---------------------------------------------------------------------------
+# Environment variable validation
+# ---------------------------------------------------------------------------
+
 missing_env = []
 for var in ["GROQ_KEY", "GROQ_MODEL", "GROQ_ENDPOINT"]:
     if not os.environ.get(var):
@@ -58,7 +80,10 @@ if missing_env:
     st.error(f"Missing environment variables: {', '.join(missing_env)}. Check your .env file.")
     st.stop()
 
-# --------------- Initialize backend ---------------
+# ---------------------------------------------------------------------------
+# Backend initialisation
+# ---------------------------------------------------------------------------
+
 try:
     embeddings = get_embeddings()
     llm = get_llm()
@@ -69,7 +94,10 @@ except Exception as e:
     st.stop()
 
 
-# --------------- Sidebar ---------------
+# ---------------------------------------------------------------------------
+# Sidebar -- system status and PDF upload
+# ---------------------------------------------------------------------------
+
 with st.sidebar:
     st.header("System Status")
     st.success("Embeddings loaded")
@@ -77,6 +105,8 @@ with st.sidebar:
     st.success("Vector databases ready")
 
     st.divider()
+
+    # Allow the user to upload a new rules PDF and re-index the vector store
     st.header("Upload New Rules PDF")
     uploaded_pdf = st.file_uploader("Replace bank rules", type=["pdf"], key="pdf_upload")
     if uploaded_pdf is not None:
@@ -97,19 +127,24 @@ with st.sidebar:
                     os.unlink(tmp_path)
 
 
-# --------------- Helper: render decision ---------------
+# ---------------------------------------------------------------------------
+# Helper: render a structured decision card
+# ---------------------------------------------------------------------------
+
 def render_decision(result, name):
-    """Render a structured decision display."""
+    """Display the evaluation result for one applicant including the
+    status badge, score metrics, breakdown table and LLM explanation."""
+
     decision = result["decision"]
 
-    # Hard rules result
+    # Hard-rule rejection -- show violations and return early
     if not result["hard_passed"]:
         st.error("**Hard Rule Violations:**")
         for f in result["hard_failures"]:
             st.markdown(f"- {f}")
         return
 
-    # Decision badge + score metrics
+    # Determine colours based on decision outcome
     if decision == "APPROVE":
         badge_color, badge_bg = "#2ecc71", "rgba(46,204,113,0.15)"
         badge_text = "Approved"
@@ -120,6 +155,7 @@ def render_decision(result, name):
         badge_color, badge_bg = "#f39c12", "rgba(243,156,18,0.15)"
         badge_text = "Refer for Manual Review"
 
+    # Status banner and score metrics rendered as HTML for precise layout
     st.markdown(
         """
         <div style="background: {bg}; border: 1px solid {color}; border-radius: 8px;
@@ -155,11 +191,11 @@ def render_decision(result, name):
         df_breakdown = pd.DataFrame(result["soft_breakdown"])
         st.dataframe(df_breakdown, hide_index=True, width=700)
 
-    # LLM explanation
+    # Collapsible LLM explanation
     with st.expander("LLM Analysis (RAG-powered)", expanded=False):
         st.markdown(result.get("llm_explanation", "No LLM analysis available."))
 
-    # Add to history
+    # Record this evaluation in session history for the Dashboard tab
     st.session_state.evaluation_history.append({
         "name": name,
         "decision": decision,
@@ -167,7 +203,10 @@ def render_decision(result, name):
     })
 
 
-# --------------- Tabs ---------------
+# ---------------------------------------------------------------------------
+# Main tabs
+# ---------------------------------------------------------------------------
+
 tab1, tab2, tab3, tab4 = st.tabs([
     "Evaluate from CSV",
     "New Application",
@@ -175,11 +214,12 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "Ask about Rules",
 ])
 
-# ==================== TAB 1: CSV Applications ====================
+# ========================= TAB 1: CSV Applications =========================
+
 with tab1:
     st.subheader("Loan Applications")
 
-    # Upload CSV option
+    # Optional CSV upload -- falls back to the default dataset
     uploaded_csv = st.file_uploader(
         "Upload custom applications CSV (optional)",
         type=["csv"],
@@ -199,7 +239,7 @@ with tab1:
     st.dataframe(df, hide_index=True, width="stretch")
     st.divider()
 
-    # Determine name column
+    # Determine which column holds the applicant name
     name_col = "name_app" if "name_app" in df.columns else "name"
 
     col1, col2 = st.columns(2)
@@ -214,9 +254,9 @@ with tab1:
     with col2:
         evaluate_all = st.button("Evaluate All", key="eval_all")
 
+    # Evaluate a single selected customer
     if st.button("Evaluate Selected", type="primary", key="eval_selected"):
         row = df.loc[selected_customer].to_dict()
-        # Normalize column names for rules engine
         if "name_app" not in row and "name" in row:
             row["name_app"] = row["name"]
         with st.spinner(f"Evaluating {row.get('name_app', 'applicant')}..."):
@@ -225,6 +265,7 @@ with tab1:
             )
         render_decision(result, row.get("name_app", "Unknown"))
 
+    # Evaluate all customers in the dataset
     if evaluate_all:
         results_for_export = []
         for idx, row in df.iterrows():
@@ -249,7 +290,7 @@ with tab1:
                 "hard_passed": result["hard_passed"],
             })
 
-        # Export button
+        # Allow the user to download the results as CSV
         if results_for_export:
             df_export = pd.DataFrame(results_for_export)
             csv_data = df_export.to_csv(index=False)
@@ -261,7 +302,8 @@ with tab1:
             )
 
 
-# ==================== TAB 2: New Application ====================
+# ========================= TAB 2: New Application =========================
+
 with tab2:
     st.subheader("Submit a New Loan Application")
 
@@ -309,7 +351,8 @@ with tab2:
             render_decision(result, name)
 
 
-# ==================== TAB 3: Dashboard ====================
+# ========================= TAB 3: Dashboard =========================
+
 with tab3:
     st.subheader("Evaluation Dashboard")
 
@@ -335,7 +378,7 @@ with tab3:
 
         st.divider()
 
-        # Charts
+        # Charts side by side
         chart_col1, chart_col2 = st.columns(2)
 
         with chart_col1:
@@ -347,26 +390,28 @@ with tab3:
             st.markdown("**Score Distribution**")
             st.bar_chart(df_hist.set_index("name")["score"])
 
-        # History table
+        # Full history table
         st.divider()
         st.markdown("**Evaluation History**")
         st.dataframe(df_hist, hide_index=True, width="stretch")
 
 
-# ==================== TAB 4: Chat about Rules ====================
+# ========================= TAB 4: Chat about Rules =========================
+
 with tab4:
     st.subheader("Ask about Bank Rules")
     st.caption("Ask any question about loan approval rules and policies.")
 
+    # Maintain chat history in session state
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # Display chat history
+    # Display previous messages
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # Chat input
+    # Chat input box
     question = st.chat_input("e.g. What credit score do I need to get approved?")
     if question:
         st.session_state.chat_history.append({"role": "user", "content": question})

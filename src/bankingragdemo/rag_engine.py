@@ -1,7 +1,9 @@
 """
 rag_engine.py
 Reusable RAG backend for bank loan evaluation.
-Extracted from bank_main.py for use by Streamlit UI and other consumers.
+Provides functions to initialise embeddings, vector stores and the LLM,
+and exposes evaluate_application() and ask_rules_question() for the
+Streamlit UI (app.py) and any other consumer.
 """
 
 import os
@@ -14,7 +16,13 @@ import llmapi
 import rules_engine
 
 
+# ---------------------------------------------------------------------------
+# Initialisation helpers
+# ---------------------------------------------------------------------------
+
 def init_embeddings():
+    """Create a HuggingFace embedding model (all-MiniLM-L6-v2).
+    This model produces 384-dimensional vectors and runs on CPU."""
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"},
@@ -23,15 +31,32 @@ def init_embeddings():
 
 
 def init_llm():
+    """Return a Groq-backed LLM instance ready for LangChain usage."""
     return llmapi.get_groqllm()
 
 
+# ---------------------------------------------------------------------------
+# Vector store loaders
+# ---------------------------------------------------------------------------
+
 def load_rules_vectorstore(embeddings, pdf_path=None):
+    """Load (or create) the ChromaDB vector store that holds the
+    bank loan rules extracted from the PDF.
+
+    Args:
+        embeddings: HuggingFaceEmbeddings instance.
+        pdf_path:   Optional path to a custom rules PDF.
+                    Defaults to bank_data/bank-rules.pdf.
+
+    Returns:
+        Chroma vector store containing the rule chunks.
+    """
     if pdf_path is None:
         pdf_path = "bank_data/bank-rules.pdf"
     persist_dir = "chroma_db_bank_rules"
     collection_name = "loan_rules"
 
+    # Build the vector store only if one does not already exist on disk
     if not os.path.exists(os.path.join(persist_dir, "chroma.sqlite3")):
         reader = PdfReader(pdf_path)
         loan_rules_text = "".join(
@@ -48,6 +73,7 @@ def load_rules_vectorstore(embeddings, pdf_path=None):
             persist_directory=persist_dir,
         )
 
+    # Vector store already exists on disk -- load it
     return Chroma(
         collection_name=collection_name,
         embedding_function=embeddings,
@@ -56,8 +82,10 @@ def load_rules_vectorstore(embeddings, pdf_path=None):
 
 
 def reindex_rules(embeddings, pdf_path):
-    """Delete existing rules DB and re-create from a new PDF."""
+    """Delete the existing rules vector store and rebuild it from a new PDF.
+    Used when the bank uploads an updated rules document via the UI."""
     import shutil
+
     persist_dir = "chroma_db_bank_rules"
     if os.path.exists(persist_dir):
         shutil.rmtree(persist_dir)
@@ -79,10 +107,13 @@ def reindex_rules(embeddings, pdf_path):
 
 
 def load_customers_vectorstore(embeddings):
+    """Load historical customer data from CSV, convert each row into a
+    textual summary, embed the summaries and store them in ChromaDB."""
     csv_path = "bank_data/bank_customers.csv"
     df_customers = pd.read_csv(csv_path)
 
     def summarize_customer_loan(row):
+        """Create a plain-text summary of one customer record."""
         return (
             f"Customer {row['name']}, age {row['age']}, income {row['income']}, "
             f"credit_score {row['credit_score']}, delinquencies {row['delinquencies']}, "
@@ -99,7 +130,13 @@ def load_customers_vectorstore(embeddings):
     )
 
 
+# ---------------------------------------------------------------------------
+# Application data helpers
+# ---------------------------------------------------------------------------
+
 def load_applications():
+    """Load loan applications and merge them with customer details.
+    Returns a single DataFrame with all fields needed for evaluation."""
     df_applications = pd.read_csv("bank_data/loan_applications.csv")
     df_customers = pd.read_csv("bank_data/bank_customers.csv")
     return df_applications.merge(
@@ -110,14 +147,33 @@ def load_applications():
     )
 
 
-def evaluate_application(applicant, retriever_rules, retriever_customers, llm):
-    """Full evaluation: hard rules -> soft score -> LLM analysis.
-    Returns dict with deterministic results + LLM explanation."""
+# ---------------------------------------------------------------------------
+# Evaluation logic
+# ---------------------------------------------------------------------------
 
-    # Step 1: Deterministic evaluation
+def evaluate_application(applicant, retriever_rules, retriever_customers, llm):
+    """Run the full evaluation pipeline for one applicant.
+
+    Pipeline steps:
+        1. Deterministic evaluation (hard rules then soft scoring).
+        2. If hard rules fail the application is rejected immediately.
+        3. Otherwise, relevant rules and historical records are retrieved
+           and the LLM provides a reasoned decision.
+
+    Args:
+        applicant:           dict with applicant fields.
+        retriever_rules:     LangChain retriever for the rules vector store.
+        retriever_customers: LangChain retriever for the customer history store.
+        llm:                 ChatOpenAI (Groq) instance.
+
+    Returns:
+        dict containing hard/soft results, decision and LLM explanation.
+    """
+
+    # Step 1 -- deterministic checks (hard rules + soft score)
     det_result = rules_engine.full_evaluation(applicant)
 
-    # Step 2: If hard rules failed, skip LLM
+    # Step 2 -- if hard rules failed, skip the LLM call
     if not det_result["hard_passed"]:
         det_result["llm_explanation"] = (
             "Application automatically rejected due to hard rule violations. "
@@ -125,7 +181,7 @@ def evaluate_application(applicant, retriever_rules, retriever_customers, llm):
         )
         return det_result
 
-    # Step 3: LLM analysis for applications that pass hard rules
+    # Step 3 -- build a textual description of the applicant
     applicant_text = (
         f"Applicant {applicant.get('name_app', applicant.get('name', 'Unknown'))}, "
         f"age {applicant['age']}, income {applicant['income']}, "
@@ -134,12 +190,16 @@ def evaluate_application(applicant, retriever_rules, retriever_customers, llm):
         f"account_balance {applicant['account_balance']}, collateral {applicant.get('collateral', False)}."
     )
 
+    # Retrieve the most relevant rule chunks and historical customer records
     rules_docs = retriever_rules.invoke(applicant_text)
     history_docs = retriever_customers.invoke(applicant_text)
 
+    # Combine all retrieved context into one block
     combined_context = "\n".join(
         [doc.page_content for doc in rules_docs + history_docs]
     )
+
+    # Build the prompt for the LLM
     prompt = f"""You are a bank loan evaluator AI. Evaluate the following loan application using the retrieved rules
 and historical customer data. Provide a clear decision (APPROVE / REFER_FOR_MANUAL_REVIEW / REJECT)
 and briefly explain why.
@@ -154,6 +214,7 @@ Context (rules + historical data):
 {combined_context}
 """
 
+    # Step 4 -- invoke the LLM and attach its response
     try:
         response = llm.invoke(prompt)
         det_result["llm_explanation"] = response.content
@@ -164,7 +225,11 @@ Context (rules + historical data):
 
 
 def ask_rules_question(question, retriever_rules, llm):
-    """Answer a natural language question about the bank rules using RAG."""
+    """Answer a natural-language question about the bank rules using RAG.
+
+    Retrieves the most relevant chunks from the rules vector store and
+    asks the LLM to formulate a concise answer based on that context.
+    """
     docs = retriever_rules.invoke(question)
     context = "\n".join([doc.page_content for doc in docs])
     prompt = f"""You are a helpful banking assistant. Answer the following question about loan approval rules

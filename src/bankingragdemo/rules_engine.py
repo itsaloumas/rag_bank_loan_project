@@ -1,34 +1,61 @@
 """
 rules_engine.py
-Deterministic hard-rule checks and soft-rule scoring based on bank-rules.pdf.
-Runs BEFORE the LLM call to catch obvious rejects and provide a transparent score breakdown.
+Deterministic rule engine for bank loan evaluation.
+
+Implements the two-tier decision logic described in bank-rules.pdf:
+    1. Hard rules  -- non-negotiable conditions that trigger an automatic
+       REJECT when violated (e.g. age outside 21-65, credit score < 550).
+    2. Soft rules  -- a points-based scoring system where each applicant
+       attribute contributes a weighted score.  The total determines the
+       final decision: >= 200 APPROVE, 150-199 REFER, < 150 REJECT.
+
+This module runs BEFORE the LLM call so that obvious rejects are caught
+cheaply and a transparent score breakdown is always available.
 """
 
 
+# ---------------------------------------------------------------------------
+# Hard rule checks
+# ---------------------------------------------------------------------------
+
 def check_hard_rules(applicant):
-    """Return (passed: bool, failures: list[str])."""
+    """Check non-negotiable eligibility criteria.
+
+    Args:
+        applicant: dict with at least age, employment_years,
+                   delinquencies, credit_score, income, loan_amount.
+
+    Returns:
+        Tuple of (passed: bool, failures: list[str]).
+        If passed is False the application must be rejected outright.
+    """
     failures = []
+
+    # Age must be between 21 and 65 inclusive
     age = applicant.get("age", 0)
     if age < 21 or age > 65:
         failures.append(f"Age {age} is outside the allowed range (21-65)")
 
+    # Minimum one year of employment required
     employment_years = applicant.get("employment_years", 0)
     if employment_years < 1:
         failures.append(f"Employment {employment_years} years is below minimum (1 year)")
 
+    # Maximum two past delinquencies allowed
     delinquencies = applicant.get("delinquencies", 0)
     if delinquencies > 2:
         failures.append(f"Delinquencies ({delinquencies}) exceed maximum allowed (2)")
 
+    # Minimum credit score of 550
     credit_score = applicant.get("credit_score", 0)
     if credit_score < 550:
         failures.append(f"Credit score {credit_score} is below minimum (550)")
 
-    # DTI check — only if both income and loan_amount are available
+    # Debt-to-income ratio must not exceed 0.40
     income = applicant.get("income", 0)
     loan_amount = applicant.get("loan_amount", 0)
     if income > 0:
-        # Approximate monthly debt payment (5-year term, ~6% rate)
+        # Approximate monthly payment assuming a 5-year term at ~6% rate
         monthly_payment = loan_amount / 60
         monthly_income = income / 12
         dti = monthly_payment / monthly_income if monthly_income > 0 else 999
@@ -39,11 +66,23 @@ def check_hard_rules(applicant):
     return passed, failures
 
 
+# ---------------------------------------------------------------------------
+# Soft rule scoring
+# ---------------------------------------------------------------------------
+
 def calculate_soft_score(applicant):
-    """Return (total_score: int, breakdown: list[dict]) based on bank-rules.pdf soft rules."""
+    """Calculate a points-based risk score from multiple applicant attributes.
+
+    Each factor contributes a number of points according to the thresholds
+    defined in bank-rules.pdf.  The breakdown list records the factor name,
+    the condition that was matched and the points awarded.
+
+    Returns:
+        Tuple of (total_score: int, breakdown: list[dict]).
+    """
     breakdown = []
 
-    # Credit Score
+    # -- Credit Score --
     cs = applicant.get("credit_score", 0)
     if cs >= 750:
         breakdown.append({"factor": "Credit Score", "condition": f"{cs} (750+)", "points": 50})
@@ -56,7 +95,7 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "Credit Score", "condition": f"{cs} (<550)", "points": 0})
 
-    # Income Level
+    # -- Income Level --
     income = applicant.get("income", 0)
     if income >= 60000:
         breakdown.append({"factor": "Income Level", "condition": f"\u20ac{income:,.0f} (\u226560K)", "points": 30})
@@ -67,7 +106,7 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "Income Level", "condition": f"\u20ac{income:,.0f} (<25K)", "points": 0})
 
-    # DTI
+    # -- Debt-to-Income (DTI) Ratio --
     loan_amount = applicant.get("loan_amount", 0)
     if income > 0:
         monthly_payment = loan_amount / 60
@@ -84,7 +123,7 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "DTI Ratio", "condition": f"{dti:.2f} (>0.40)", "points": 0})
 
-    # Account Balance (>= 6 months of loan payments)
+    # -- Account Balance (coverage in months of loan payments) --
     balance = applicant.get("account_balance", 0)
     monthly_payment = loan_amount / 60 if loan_amount > 0 else 0
     if monthly_payment > 0:
@@ -98,7 +137,7 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "Account Balance", "condition": f"\u20ac{balance:,.0f} (<3 months)", "points": 0})
 
-    # Employment Stability
+    # -- Employment Stability --
     emp = applicant.get("employment_years", 0)
     if emp >= 5:
         breakdown.append({"factor": "Employment Stability", "condition": f"{emp} years (\u22655)", "points": 20})
@@ -107,7 +146,7 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "Employment Stability", "condition": f"{emp} years (<2)", "points": 0})
 
-    # Delinquency
+    # -- Delinquency History --
     delin = applicant.get("delinquencies", 0)
     if delin == 0:
         breakdown.append({"factor": "Delinquency History", "condition": "0 defaults", "points": 20})
@@ -116,21 +155,21 @@ def calculate_soft_score(applicant):
     else:
         breakdown.append({"factor": "Delinquency History", "condition": f"{delin} defaults", "points": 0})
 
-    # Collateral
+    # -- Collateral --
     collateral = applicant.get("collateral", False)
     if collateral:
         breakdown.append({"factor": "Collateral", "condition": "Secured", "points": 20})
     else:
         breakdown.append({"factor": "Collateral", "condition": "Unsecured", "points": 0})
 
-    # Age (Optimal Range)
+    # -- Age (optimal range bonus) --
     age = applicant.get("age", 0)
     if 25 <= age <= 55:
         breakdown.append({"factor": "Age (Optimal)", "condition": f"{age} (25-55)", "points": 10})
     else:
         breakdown.append({"factor": "Age (Optimal)", "condition": f"{age} (outside 25-55)", "points": 0})
 
-    # Loan Amount vs Income
+    # -- Loan Amount vs Income ratio --
     if income > 0:
         loan_ratio = loan_amount / income
         if loan_ratio <= 0.30:
@@ -146,8 +185,18 @@ def calculate_soft_score(applicant):
     return total, breakdown
 
 
+# ---------------------------------------------------------------------------
+# Decision thresholds
+# ---------------------------------------------------------------------------
+
 def get_deterministic_decision(total_score):
-    """Return decision string based on score thresholds from bank-rules.pdf."""
+    """Map the total soft score to a decision string.
+
+    Thresholds (from bank-rules.pdf):
+        >= 200  ->  APPROVE
+        150-199 ->  REFER_FOR_MANUAL_REVIEW
+        < 150   ->  REJECT
+    """
     if total_score >= 200:
         return "APPROVE"
     elif total_score >= 150:
@@ -156,8 +205,21 @@ def get_deterministic_decision(total_score):
         return "REJECT"
 
 
+# ---------------------------------------------------------------------------
+# Full evaluation entry point
+# ---------------------------------------------------------------------------
+
 def full_evaluation(applicant):
-    """Run complete deterministic evaluation. Returns dict with all results."""
+    """Run the complete deterministic evaluation pipeline.
+
+    First checks hard rules; if any fail the application is rejected
+    immediately with score 0.  Otherwise calculates the soft score
+    and returns the corresponding decision.
+
+    Returns:
+        dict with keys: hard_passed, hard_failures, soft_score,
+        soft_breakdown, decision, reason.
+    """
     hard_passed, hard_failures = check_hard_rules(applicant)
 
     if not hard_passed:
