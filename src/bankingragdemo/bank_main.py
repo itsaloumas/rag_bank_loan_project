@@ -91,7 +91,7 @@ def load_customer_data_from_csv() -> Chroma:
 # --- 3️⃣ Define the RAG chain ---
 #llm = ChatOpenAI(temperature=0, model_name="gpt-3.5-turbo")
 import llmapi as sp
-llm = sp.get_openllm()
+llm = sp.get_groqllm()
 
 # We will retrieve both rules and customer history separately
 vectorstore_rules = load_loan_rules_from_pdf()
