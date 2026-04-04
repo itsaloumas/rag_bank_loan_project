@@ -9,3 +9,7 @@ PyPDF2
 dotenv
 groq
 streamlit
+fastapi
+uvicorn
+python-multipart
+requests

@@ -2,6 +2,10 @@
 app.py
 Streamlit web interface for the Bank Loan RAG Evaluation System.
 
+Communicates with the FastAPI backend (api.py) via REST API calls.
+All heavy processing (embeddings, LLM, vector stores) runs on the
+backend server; this frontend is a thin UI client.
+
 Provides four tabs:
     1. Evaluate from CSV  -- load or upload applications and evaluate them.
     2. New Application    -- manual single-applicant form.
@@ -12,47 +16,29 @@ Run with:
     streamlit run src/bankingragdemo/app.py
 """
 
-import sys
-import os
-import tempfile
-
-# Ensure sibling modules (rag_engine, rules_engine, llmapi) are importable
-sys.path.insert(0, os.path.dirname(__file__))
-
 import streamlit as st
 import pandas as pd
-import rag_engine
-import rules_engine
+import requests
+
+# Backend API base URL
+API_BASE = "http://localhost:8000"
 
 
 # ---------------------------------------------------------------------------
-# Cached resource loaders (run once and persist across reruns)
+# Helper: convert numpy / pandas types to native Python for JSON
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner="Loading embeddings model...")
-def get_embeddings():
-    """Initialise the HuggingFace sentence-transformer embedding model."""
-    return rag_engine.init_embeddings()
-
-
-@st.cache_resource(show_spinner="Connecting to LLM...")
-def get_llm():
-    """Create the Groq LLM connection."""
-    return rag_engine.init_llm()
-
-
-@st.cache_resource(show_spinner="Loading loan rules database...")
-def get_rules_retriever(_embeddings):
-    """Build or load the rules vector store and return a retriever."""
-    vs = rag_engine.load_rules_vectorstore(_embeddings)
-    return vs.as_retriever()
-
-
-@st.cache_resource(show_spinner="Loading customer history database...")
-def get_customers_retriever(_embeddings):
-    """Build or load the customer history vector store and return a retriever."""
-    vs = rag_engine.load_customers_vectorstore(_embeddings)
-    return vs.as_retriever()
+def serialize_row(row: dict) -> dict:
+    """Ensure all values in a DataFrame row dict are JSON-serialisable."""
+    clean = {}
+    for k, v in row.items():
+        if hasattr(v, "item"):
+            clean[k] = v.item()
+        elif pd.isna(v):
+            clean[k] = None
+        else:
+            clean[k] = v
+    return clean
 
 
 # ---------------------------------------------------------------------------
@@ -67,30 +53,20 @@ st.caption("RAG-powered loan application evaluation system")
 if "evaluation_history" not in st.session_state:
     st.session_state.evaluation_history = []
 
-# ---------------------------------------------------------------------------
-# Environment variable validation
-# ---------------------------------------------------------------------------
-
-missing_env = []
-for var in ["GROQ_KEY", "GROQ_MODEL", "GROQ_ENDPOINT"]:
-    if not os.environ.get(var):
-        missing_env.append(var)
-
-if missing_env:
-    st.error(f"Missing environment variables: {', '.join(missing_env)}. Check your .env file.")
-    st.stop()
 
 # ---------------------------------------------------------------------------
-# Backend initialisation
+# Backend health check
 # ---------------------------------------------------------------------------
 
 try:
-    embeddings = get_embeddings()
-    llm = get_llm()
-    retriever_rules = get_rules_retriever(embeddings)
-    retriever_customers = get_customers_retriever(embeddings)
-except Exception as e:
-    st.error(f"Failed to initialize system: {str(e)}")
+    health = requests.get(f"{API_BASE}/api/health", timeout=5).json()
+    backend_ok = health["status"] == "ok"
+except Exception:
+    st.error("Cannot connect to backend API. Make sure it is running on port 8000.")
+    st.stop()
+
+if not backend_ok:
+    st.warning("Backend is still initialising. Please wait and refresh.")
     st.stop()
 
 
@@ -100,31 +76,44 @@ except Exception as e:
 
 with st.sidebar:
     st.header("System Status")
-    st.success("Embeddings loaded")
-    st.success("LLM connected (Groq)")
-    st.success("Vector databases ready")
+
+    # Show status from the API health endpoint
+    if health["embeddings_loaded"]:
+        st.success("Embeddings loaded")
+    else:
+        st.error("Embeddings not loaded")
+
+    if health["llm_connected"]:
+        st.success("LLM connected (Groq)")
+    else:
+        st.error("LLM not connected")
+
+    if health["rules_db_ready"] and health["customers_db_ready"]:
+        st.success("Vector databases ready")
+    else:
+        st.error("Vector databases not ready")
 
     st.divider()
 
-    # Allow the user to upload a new rules PDF and re-index the vector store
+    # Allow the user to upload a new rules PDF via the API
     st.header("Upload New Rules PDF")
     uploaded_pdf = st.file_uploader("Replace bank rules", type=["pdf"], key="pdf_upload")
     if uploaded_pdf is not None:
         if st.button("Re-index Rules"):
             with st.spinner("Re-indexing rules from uploaded PDF..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(uploaded_pdf.read())
-                    tmp_path = tmp.name
                 try:
-                    new_vs = rag_engine.reindex_rules(embeddings, tmp_path)
-                    retriever_rules = new_vs.as_retriever()
-                    get_rules_retriever.clear()
-                    st.success("Rules re-indexed successfully!")
-                    st.rerun()
+                    resp = requests.post(
+                        f"{API_BASE}/api/rules/upload",
+                        files={"file": (uploaded_pdf.name, uploaded_pdf.read(), "application/pdf")},
+                        timeout=60,
+                    )
+                    if resp.status_code == 200:
+                        st.success("Rules re-indexed successfully!")
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to re-index: {resp.json().get('detail', 'Unknown error')}")
                 except Exception as e:
                     st.error(f"Failed to re-index: {str(e)}")
-                finally:
-                    os.unlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +208,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.subheader("Loan Applications")
 
-    # Optional CSV upload -- falls back to the default dataset
+    # Optional CSV upload -- falls back to the default dataset from the API
     uploaded_csv = st.file_uploader(
         "Upload custom applications CSV (optional)",
         type=["csv"],
@@ -232,9 +221,9 @@ with tab1:
             st.info(f"Loaded {len(df)} applications from uploaded file.")
         except Exception as e:
             st.error(f"Failed to read CSV: {str(e)}")
-            df = rag_engine.load_applications()
+            df = pd.DataFrame(requests.get(f"{API_BASE}/api/applications", timeout=10).json())
     else:
-        df = rag_engine.load_applications()
+        df = pd.DataFrame(requests.get(f"{API_BASE}/api/applications", timeout=10).json())
 
     st.dataframe(df, hide_index=True, width="stretch")
     st.divider()
@@ -256,35 +245,33 @@ with tab1:
 
     # Evaluate a single selected customer
     if st.button("Evaluate Selected", type="primary", key="eval_selected"):
-        row = df.loc[selected_customer].to_dict()
+        row = serialize_row(df.loc[selected_customer].to_dict())
         if "name_app" not in row and "name" in row:
             row["name_app"] = row["name"]
         with st.spinner(f"Evaluating {row.get('name_app', 'applicant')}..."):
-            result = rag_engine.evaluate_application(
-                row, retriever_rules, retriever_customers, llm
-            )
+            resp = requests.post(f"{API_BASE}/api/evaluate", json=row, timeout=30)
+            result = resp.json()
         render_decision(result, row.get("name_app", "Unknown"))
 
     # Evaluate all customers in the dataset
     if evaluate_all:
         results_for_export = []
         for idx, row in df.iterrows():
-            app = row.to_dict()
-            if "name_app" not in app and "name" in app:
-                app["name_app"] = app["name"]
-            with st.spinner(f"Evaluating {app.get('name_app', 'applicant')}..."):
-                result = rag_engine.evaluate_application(
-                    app, retriever_rules, retriever_customers, llm
-                )
+            app_data = serialize_row(row.to_dict())
+            if "name_app" not in app_data and "name" in app_data:
+                app_data["name_app"] = app_data["name"]
+            with st.spinner(f"Evaluating {app_data.get('name_app', 'applicant')}..."):
+                resp = requests.post(f"{API_BASE}/api/evaluate", json=app_data, timeout=30)
+                result = resp.json()
             with st.expander(
-                f"{app.get('customer_id', idx)} - {app.get('name_app', 'Unknown')}",
+                f"{app_data.get('customer_id', idx)} - {app_data.get('name_app', 'Unknown')}",
                 expanded=True,
             ):
-                render_decision(result, app.get("name_app", "Unknown"))
+                render_decision(result, app_data.get("name_app", "Unknown"))
 
             results_for_export.append({
-                "customer_id": app.get("customer_id", idx),
-                "name": app.get("name_app", "Unknown"),
+                "customer_id": app_data.get("customer_id", idx),
+                "name": app_data.get("name_app", "Unknown"),
                 "decision": result["decision"],
                 "score": result["soft_score"],
                 "hard_passed": result["hard_passed"],
@@ -344,9 +331,8 @@ with tab2:
             }
 
             with st.spinner("Evaluating application..."):
-                result = rag_engine.evaluate_application(
-                    applicant, retriever_rules, retriever_customers, llm
-                )
+                resp = requests.post(f"{API_BASE}/api/evaluate", json=applicant, timeout=30)
+                result = resp.json()
 
             render_decision(result, name)
 
@@ -406,20 +392,31 @@ with tab4:
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # Display previous messages
-    for msg in st.session_state.chat_history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    # Chat container: starts small, grows with messages, scrolls after 450px
+    num_messages = len(st.session_state.chat_history)
+    chat_height = min(max(200, num_messages * 120), 600)
+    chat_container = st.container(height=chat_height)
 
-    # Chat input box
+    with chat_container:
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    # Chat input box (always at bottom, below the container)
     question = st.chat_input("e.g. What credit score do I need to get approved?")
     if question:
         st.session_state.chat_history.append({"role": "user", "content": question})
-        with st.chat_message("user"):
-            st.markdown(question)
+        with chat_container:
+            with st.chat_message("user"):
+                st.markdown(question)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Searching rules..."):
-                answer = rag_engine.ask_rules_question(question, retriever_rules, llm)
-            st.markdown(answer)
+            with st.chat_message("assistant"):
+                with st.spinner("Searching rules..."):
+                    resp = requests.post(
+                        f"{API_BASE}/api/ask",
+                        json={"question": question},
+                        timeout=30,
+                    )
+                    answer = resp.json()["answer"]
+                st.markdown(answer)
             st.session_state.chat_history.append({"role": "assistant", "content": answer})

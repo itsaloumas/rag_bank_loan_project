@@ -1,0 +1,55 @@
+@startuml Use Case Diagram - RAG Bank Loan Evaluator
+
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+skinparam usecase {
+    BackgroundColor #E8F5E9
+    BorderColor #2E7D32
+    ArrowColor #1B5E20
+}
+
+left to right direction
+
+actor "Bank Officer" as BO
+actor "Risk Manager" as RM
+actor "Groq LLM API" as LLM
+actor "ChromaDB" as DB
+
+rectangle "RAG Bank Loan Evaluator" {
+    usecase "UC1: Evaluate Single\nLoan Application" as UC1
+    usecase "UC2: Batch Evaluate\nfrom CSV" as UC2
+    usecase "UC3: Ask about\nBank Rules (Q&A)" as UC3
+    usecase "UC4: View Dashboard\nAnalytics" as UC4
+    usecase "UC5: Upload New\nRules PDF" as UC5
+    usecase "UC6: Export Evaluation\nResults" as UC6
+
+    usecase "Check Hard Rules" as HR
+    usecase "Calculate Soft Score" as SS
+    usecase "RAG Retrieval" as RAG
+    usecase "LLM Analysis" as LLMA
+}
+
+BO --> UC1
+BO --> UC2
+BO --> UC3
+BO --> UC4
+BO --> UC6
+
+RM --> UC3
+RM --> UC4
+RM --> UC5
+
+UC1 ..> HR : <<include>>
+UC1 ..> SS : <<include>>
+UC1 ..> RAG : <<include>>
+UC1 ..> LLMA : <<include>>
+
+UC2 ..> UC1 : <<include>>
+
+UC3 ..> RAG : <<include>>
+UC3 ..> LLMA : <<include>>
+
+RAG --> DB
+LLMA --> LLM
+
+@enduml
