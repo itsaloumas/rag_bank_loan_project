@@ -4,10 +4,10 @@ langchain_huggingface
 langchain_community
 langchain_openai
 langchain-chroma
-sentence-transformers 
+langchain-text-splitters
+sentence-transformers
 PyPDF2
-dotenv
-groq
+python-dotenv
 streamlit
 fastapi
 uvicorn

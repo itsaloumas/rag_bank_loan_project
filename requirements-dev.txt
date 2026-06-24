@@ -1,0 +1,2 @@
+# Development (not required to run the application but for testing).
+pytest

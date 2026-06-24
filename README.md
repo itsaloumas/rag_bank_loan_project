@@ -101,3 +101,9 @@ python bank_main.py
 | >= 200 pts  | APPROVE                  |
 | 150-199 pts | REFER FOR MANUAL REVIEW  |
 | < 150 pts   | REJECT                   |
+
+
+## Testing
+
+For tests pytest is used. The requirements-dev.txt has the python package required. The command "pytest tests/test_rules_engine.py" can be used.
+This test runs 31 checks on the rules and if they are applied properly.

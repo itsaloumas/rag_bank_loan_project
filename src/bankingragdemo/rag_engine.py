@@ -139,12 +139,16 @@ def load_applications():
     Returns a single DataFrame with all fields needed for evaluation."""
     df_applications = pd.read_csv("bank_data/loan_applications.csv")
     df_customers = pd.read_csv("bank_data/bank_customers.csv")
-    return df_applications.merge(
+    merged = df_applications.merge(
         df_customers,
         on="customer_id",
         how="left",
         suffixes=("_app", "_cust"),
     )
+    if "loan_amount_application" in merged.columns:
+        merged = merged.rename(columns={"loan_amount": "loan_amount_historical"})
+        merged["loan_amount"] = merged["loan_amount_application"]
+    return merged
 
 
 # ---------------------------------------------------------------------------
