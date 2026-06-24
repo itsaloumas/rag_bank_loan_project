@@ -82,7 +82,7 @@ def test_high_dti_fails():
 
 
 def test_multiple_hard_failures_accumulate():
-    passed, failures = R.check_hard_rules(
+    passed, failures = rules_engine.check_hard_rules(
         _base_applicant(age=18, credit_score=400, employment_years=0)
     )
     assert passed is False

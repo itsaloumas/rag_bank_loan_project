@@ -42,6 +42,28 @@ def serialize_row(row: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Helper: call the FastAPI backend with graceful error handling
+# ---------------------------------------------------------------------------
+
+def call_backend(method, path, **kwargs):
+    """Call the FastAPI backend and return parsed JSON, or None (after showing
+    a friendly error) if the request fails or returns a non-200 status."""
+    try:
+        resp = requests.request(method, f"{API_BASE}{path}", **kwargs)
+    except requests.exceptions.RequestException as exc:
+        st.error(f"Could not reach the backend: {exc}")
+        return None
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except ValueError:
+            detail = resp.text
+        st.error(f"Backend error ({resp.status_code}): {detail}")
+        return None
+    return resp.json()
+
+
+# ---------------------------------------------------------------------------
 # Page configuration
 # ---------------------------------------------------------------------------
 
@@ -131,6 +153,11 @@ def render_decision(result, name):
         st.error("**Hard Rule Violations:**")
         for f in result["hard_failures"]:
             st.markdown(f"- {f}")
+        st.session_state.evaluation_history.append({
+            "name": name,
+            "decision": decision,
+            "score": result["soft_score"],
+        })
         return
 
     # Determine colours based on decision outcome
@@ -215,15 +242,19 @@ with tab1:
         key="csv_upload",
     )
 
+    df = None
     if uploaded_csv is not None:
         try:
             df = pd.read_csv(uploaded_csv)
             st.info(f"Loaded {len(df)} applications from uploaded file.")
         except Exception as e:
             st.error(f"Failed to read CSV: {str(e)}")
-            df = pd.DataFrame(requests.get(f"{API_BASE}/api/applications", timeout=10).json())
-    else:
-        df = pd.DataFrame(requests.get(f"{API_BASE}/api/applications", timeout=10).json())
+
+    if df is None:
+        data = call_backend("GET", "/api/applications", timeout=10)
+        if data is None:
+            st.stop()
+        df = pd.DataFrame(data)
 
     st.dataframe(df, hide_index=True, width="stretch")
     st.divider()
@@ -249,9 +280,9 @@ with tab1:
         if "name_app" not in row and "name" in row:
             row["name_app"] = row["name"]
         with st.spinner(f"Evaluating {row.get('name_app', 'applicant')}..."):
-            resp = requests.post(f"{API_BASE}/api/evaluate", json=row, timeout=30)
-            result = resp.json()
-        render_decision(result, row.get("name_app", "Unknown"))
+            result = call_backend("POST", "/api/evaluate", json=row, timeout=30)
+        if result is not None:
+            render_decision(result, row.get("name_app", "Unknown"))
 
     # Evaluate all customers in the dataset
     if evaluate_all:
@@ -261,8 +292,9 @@ with tab1:
             if "name_app" not in app_data and "name" in app_data:
                 app_data["name_app"] = app_data["name"]
             with st.spinner(f"Evaluating {app_data.get('name_app', 'applicant')}..."):
-                resp = requests.post(f"{API_BASE}/api/evaluate", json=app_data, timeout=30)
-                result = resp.json()
+                result = call_backend("POST", "/api/evaluate", json=app_data, timeout=30)
+            if result is None:
+                continue
             with st.expander(
                 f"{app_data.get('customer_id', idx)} - {app_data.get('name_app', 'Unknown')}",
                 expanded=True,
@@ -331,10 +363,10 @@ with tab2:
             }
 
             with st.spinner("Evaluating application..."):
-                resp = requests.post(f"{API_BASE}/api/evaluate", json=applicant, timeout=30)
-                result = resp.json()
+                result = call_backend("POST", "/api/evaluate", json=applicant, timeout=30)
 
-            render_decision(result, name)
+            if result is not None:
+                render_decision(result, name)
 
 
 # ========================= TAB 3: Dashboard =========================
@@ -412,11 +444,7 @@ with tab4:
 
             with st.chat_message("assistant"):
                 with st.spinner("Searching rules..."):
-                    resp = requests.post(
-                        f"{API_BASE}/api/ask",
-                        json={"question": question},
-                        timeout=30,
-                    )
-                    answer = resp.json()["answer"]
+                    data = call_backend("POST", "/api/ask", json={"question": question}, timeout=30)
+                answer = data["answer"] if data else "Sorry, I couldn't reach the rules service. Please try again."
                 st.markdown(answer)
             st.session_state.chat_history.append({"role": "assistant", "content": answer})
