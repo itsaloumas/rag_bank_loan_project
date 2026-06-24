@@ -156,11 +156,13 @@ def calculate_soft_score(applicant):
         breakdown.append({"factor": "Delinquency History", "condition": f"{delin} defaults", "points": 0})
 
     # -- Collateral --
-    collateral = applicant.get("collateral", False)
-    if collateral:
+    collateral = applicant.get("collateral", None)
+    if collateral is True:
         breakdown.append({"factor": "Collateral", "condition": "Secured", "points": 20})
-    else:
+    elif collateral is False:
         breakdown.append({"factor": "Collateral", "condition": "Unsecured", "points": 0})
+    else:
+        breakdown.append({"factor": "Collateral", "condition": "Not provided", "points": 0})
 
     # -- Age (optimal range bonus) --
     age = applicant.get("age", 0)

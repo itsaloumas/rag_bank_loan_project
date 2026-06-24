@@ -40,7 +40,7 @@ class ApplicantRequest(BaseModel):
     loan_amount: float
     employment_years: float = 0
     account_balance: float = 0
-    collateral: bool = False
+    collateral: bool | None = None
     customer_id: str | None = None
 
 
@@ -105,7 +105,13 @@ async def lifespan(app: FastAPI):
 
     # Load all resources
     app.state.embeddings = rag_engine.init_embeddings()
-    app.state.llm = rag_engine.init_llm()
+    try:
+        app.state.llm = rag_engine.init_llm()
+        app.state.llm.invoke("ping")
+        app.state.llm_ok = True
+    except Exception:
+        app.state.llm = None
+        app.state.llm_ok = False
 
     rules_vs = rag_engine.load_rules_vectorstore(app.state.embeddings)
     app.state.retriever_rules = rules_vs.as_retriever()
@@ -151,7 +157,7 @@ def health_check():
     return HealthResponse(
         status="ok" if ready else "initialising",
         embeddings_loaded=hasattr(app.state, "embeddings"),
-        llm_connected=hasattr(app.state, "llm"),
+        llm_connected=getattr(app.state, "llm_ok", False),
         rules_db_ready=hasattr(app.state, "retriever_rules"),
         customers_db_ready=hasattr(app.state, "retriever_customers"),
     )
