@@ -58,6 +58,8 @@ def call_backend(method, path, **kwargs):
             detail = resp.json().get("detail", resp.text)
         except ValueError:
             detail = resp.text
+        if isinstance(detail, list):
+            detail = "; ".join(f"{e['loc'][-1]}: {e['msg']}" for e in detail)
         st.error(f"Backend error ({resp.status_code}): {detail}")
         return None
     return resp.json()
