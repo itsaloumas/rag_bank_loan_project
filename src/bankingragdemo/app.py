@@ -331,11 +331,11 @@ with tab2:
 
         with col1:
             name = st.text_input("Full Name", placeholder="e.g. Nikos P.")
-            age = st.number_input("Age", min_value=18, max_value=100, value=35)
+            age = st.number_input("Age", min_value=18, value=35)
             income = st.number_input("Annual Income", min_value=0, value=40000, step=1000)
 
         with col2:
-            credit_score = st.number_input("Credit Score", min_value=0, max_value=850, value=650)
+            credit_score = st.number_input("Credit Score", min_value=0, value=650)
             delinquencies = st.number_input("Past Delinquencies", min_value=0, max_value=10, value=0)
             employment_years = st.number_input("Employment Years", min_value=0, max_value=50, value=5)
 
