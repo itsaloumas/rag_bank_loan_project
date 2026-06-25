@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 # Ensure sibling modules are importable
@@ -33,13 +33,13 @@ import rag_engine
 class ApplicantRequest(BaseModel):
     """Input schema for a single loan application."""
     name_app: str = "Unknown"
-    age: int
-    income: float
-    credit_score: int
-    delinquencies: int = 0
-    loan_amount: float
-    employment_years: float = 0
-    account_balance: float = 0
+    age: int = Field(ge=18, le=100)
+    income: float = Field(gt=0)
+    credit_score: int = Field(ge=0, le=850)
+    delinquencies: int = Field(default=0, ge=0)
+    loan_amount: float = Field(gt=0)
+    employment_years: float = Field(default=0, ge=0)
+    account_balance: float = Field(default=0, ge=0)
     collateral: bool | None = None
     customer_id: str | None = None
 
@@ -258,4 +258,4 @@ def upload_rules(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("api:app", host="0.0.0.0", port=8000)
+    uvicorn.run("api:app", host="127.0.0.1", port=8000)
