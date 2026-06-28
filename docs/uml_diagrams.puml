@@ -1,0 +1,429 @@
+
+'==============================================================
+' 1. USE CASE DIAGRAM
+'==============================================================
+@startuml UseCase_Diagram
+
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+skinparam usecase {
+    BackgroundColor #E8F5E9
+    BorderColor #2E7D32
+}
+
+left to right direction
+
+actor "Bank Officer" as BO
+actor "Risk Manager" as RM
+actor "Groq LLM API" as LLM <<external>>
+actor "ChromaDB" as DB <<external>>
+
+rectangle "RAG Bank Loan Evaluator" {
+    usecase "UC1: Evaluate Single\nLoan Application" as UC1
+    usecase "UC2: Batch Evaluate\nfrom CSV" as UC2
+    usecase "UC3: Ask about\nBank Rules" as UC3
+    usecase "UC4: View Dashboard\nAnalytics" as UC4
+    usecase "UC5: Upload New\nRules PDF" as UC5
+    usecase "UC6: Export Evaluation\nResults" as UC6
+
+    usecase "Check Hard Rules" as HR
+    usecase "Calculate Soft Score" as SS
+    usecase "RAG Retrieval" as RAG
+    usecase "LLM Analysis" as LLMA
+}
+
+BO --> UC1
+BO --> UC2
+BO --> UC3
+BO --> UC4
+BO --> UC6
+
+RM --> UC3
+RM --> UC4
+RM --> UC5
+
+UC1 ..> HR : <<include>>
+UC1 ..> SS : <<include>>
+UC1 ..> RAG : <<include>>
+UC1 ..> LLMA : <<include>>
+
+UC2 ..> UC1 : <<include>>
+UC2 ..> UC6 : <<extend>>
+
+UC3 ..> RAG : <<include>>
+UC3 ..> LLMA : <<include>>
+
+RAG --> DB
+LLMA --> LLM
+
+@enduml
+
+
+'==============================================================
+' 2. SEQUENCE DIAGRAM - UC1: Evaluate Single Application
+'==============================================================
+@startuml Sequence_UC1_Evaluate_Single
+
+title UC1: Evaluate Single Loan Application
+
+actor "Bank Officer" as BO
+participant "Streamlit UI\n(app.py)" as UI
+participant "RAG Engine\n(rag_engine.py)" as RE
+participant "Rules Engine\n(rules_engine.py)" as RU
+participant "ChromaDB" as DB
+participant "LLM API\n(llmapi.py)" as LLM
+participant "Groq API" as GROQ
+
+BO -> UI : Enter applicant data\n(name, age, income, credit score...)
+UI -> RE : evaluate_application(data)
+
+RE -> RU : check_hard_rules(data)
+alt Hard Rule Violated
+    RU --> RE : REJECT (reason)
+    RE --> UI : Show REJECT result
+    UI --> BO : Display rejection
+else Hard Rules Passed
+    RU --> RE : PASS
+end
+
+RE -> RU : calculate_soft_score(data)
+RU --> RE : score + breakdown
+
+RE -> DB : query_similar_customers(data)
+DB --> RE : similar customer records
+
+RE -> DB : query_bank_rules(data)
+DB --> RE : relevant rule chunks
+
+RE -> LLM : build_prompt(rules, history, data)
+LLM -> GROQ : API request
+GROQ --> LLM : LLM response
+LLM --> RE : analysis + recommendation
+
+RE --> UI : full result\n(decision, score, breakdown, LLM analysis)
+UI --> BO : Display result with\nstatus banner, score, breakdown
+
+@enduml
+
+
+'==============================================================
+' 3. SEQUENCE DIAGRAM - UC2: Batch Evaluate from CSV
+'==============================================================
+@startuml Sequence_UC2_Batch_Evaluate
+
+title UC2: Batch Evaluate from CSV
+
+actor "Bank Officer" as BO
+participant "Streamlit UI\n(app.py)" as UI
+participant "RAG Engine\n(rag_engine.py)" as RE
+
+BO -> UI : Upload CSV file
+UI -> UI : Parse CSV and display table
+
+alt Evaluate Selected
+    BO -> UI : Select customer + click Evaluate Selected
+    UI -> RE : evaluate_application(selected_data)
+    RE --> UI : result
+    UI --> BO : Display single result
+else Evaluate All
+    BO -> UI : Click Evaluate All
+    loop For each customer in CSV
+        UI -> RE : evaluate_application(customer_data)
+        RE --> UI : result
+    end
+    UI --> BO : Display results table
+    UI --> BO : Offer CSV download
+end
+
+@enduml
+
+
+'==============================================================
+' 4. SEQUENCE DIAGRAM - UC3: Ask about Bank Rules
+'==============================================================
+@startuml Sequence_UC3_Ask_Rules
+
+title UC3: Ask about Bank Rules (Q&A)
+
+actor "Bank Officer" as BO
+participant "Streamlit UI\n(app.py)" as UI
+participant "RAG Engine\n(rag_engine.py)" as RE
+participant "ChromaDB" as DB
+participant "LLM API\n(llmapi.py)" as LLM
+participant "Groq API" as GROQ
+
+BO -> UI : Type question\n(e.g. "What credit score is needed?")
+UI -> RE : ask_question(query)
+
+RE -> DB : similarity_search(query)
+DB --> RE : relevant rule chunks from PDF
+
+RE -> LLM : build_qa_prompt(query, chunks)
+LLM -> GROQ : API request
+GROQ --> LLM : answer
+LLM --> RE : formatted answer
+
+RE --> UI : answer text
+UI --> BO : Display answer
+
+@enduml
+
+
+'==============================================================
+' 5. SEQUENCE DIAGRAM - UC4: View Dashboard
+'==============================================================
+@startuml Sequence_UC4_Dashboard
+
+title UC4: View Dashboard Analytics
+
+actor "Bank Officer" as BO
+participant "Streamlit UI\n(app.py)" as UI
+participant "Session State" as SS
+
+BO -> UI : Navigate to Dashboard tab
+UI -> SS : Get evaluation history
+SS --> UI : List of past evaluations
+
+UI -> UI : Calculate statistics\n(total, approve count,\nreject count, refer count,\naverage score)
+UI -> UI : Generate charts\n(pie chart, bar chart)
+
+UI --> BO : Display metrics,\ncharts, and history table
+
+@enduml
+
+
+'==============================================================
+' 6. SEQUENCE DIAGRAM - UC5: Upload New Rules PDF
+'==============================================================
+@startuml Sequence_UC5_Upload_Rules
+
+title UC5: Upload New Rules PDF
+
+actor "Risk Manager" as RM
+participant "Streamlit UI\n(app.py)" as UI
+participant "RAG Engine\n(rag_engine.py)" as RE
+participant "Sentence\nTransformers" as ST
+participant "ChromaDB" as DB
+
+RM -> UI : Upload new PDF via sidebar
+UI -> RE : update_rules(pdf_file)
+
+RE -> RE : Extract text from PDF
+RE -> RE : Split into chunks
+
+loop For each chunk
+    RE -> ST : generate_embedding(chunk)
+    ST --> RE : vector
+end
+
+RE -> DB : Clear old rules collection
+RE -> DB : Store new embeddings + chunks
+DB --> RE : Confirmation
+
+RE --> UI : Rules updated successfully
+UI --> RM : Display success message\n+ update System Status
+
+@enduml
+
+
+'==============================================================
+' 7. SEQUENCE DIAGRAM - UC6: Export Results
+'==============================================================
+@startuml Sequence_UC6_Export
+
+title UC6: Export Evaluation Results
+
+actor "Bank Officer" as BO
+participant "Streamlit UI\n(app.py)" as UI
+participant "Session State" as SS
+
+BO -> UI : Click Download CSV\n(after batch evaluation)
+UI -> SS : Get evaluation results
+SS --> UI : Results data
+
+UI -> UI : Convert to CSV format
+UI --> BO : Download CSV file
+
+@enduml
+
+
+'==============================================================
+' 8. CLASS DIAGRAM
+'==============================================================
+@startuml Class_Diagram
+
+title Class Diagram - RAG Bank Loan Evaluator
+
+package "UI Layer" {
+    class "app.py" as APP {
+        - session_state
+        + render_csv_tab()
+        + render_new_application_tab()
+        + render_dashboard_tab()
+        + render_qa_tab()
+        + render_sidebar()
+    }
+}
+
+package "Business Logic" {
+    class "RAGEngine" as RE {
+        - rules_vectorstore
+        - customer_vectorstore
+        - llm
+        + evaluate_application(data): Result
+        + ask_question(query): String
+        + update_rules(pdf): Boolean
+    }
+
+    class "RulesEngine" as RUE {
+        - hard_rules: List
+        - soft_rules: List
+        + check_hard_rules(data): Boolean
+        + calculate_soft_score(data): Score
+        + get_score_breakdown(data): List
+    }
+}
+
+package "Data Access" {
+    class "LLMApi" as LLMA {
+        - groq_key: String
+        - groq_model: String
+        - groq_endpoint: String
+        + get_groqllm(): ChatOpenAI
+    }
+
+    class "ChromaDB" as CDB {
+        - rules_collection
+        - customer_collection
+        + similarity_search(query): List
+        + add_documents(docs): void
+    }
+}
+
+package "External Services" {
+    class "Groq API" as GROQ {
+        + chat_completion(prompt): Response
+    }
+
+    class "SentenceTransformers" as ST {
+        + encode(text): Vector
+    }
+}
+
+APP --> RE
+RE --> RUE
+RE --> LLMA
+RE --> CDB
+LLMA --> GROQ
+CDB --> ST
+
+@enduml
+
+
+'==============================================================
+' 9. ACTIVITY DIAGRAM - Loan Evaluation Flow
+'==============================================================
+@startuml Activity_Loan_Evaluation
+
+title Activity Diagram - Loan Evaluation Flow
+
+start
+
+:Receive application data;
+
+:Check Hard Rules;
+
+if (Age < 21 or Age > 65?) then (yes)
+    :REJECT - Age out of range;
+    stop
+elseif (Credit Score < 550?) then (yes)
+    :REJECT - Credit too low;
+    stop
+elseif (DTI > 0.40?) then (yes)
+    :REJECT - DTI too high;
+    stop
+elseif (Delinquencies > 2?) then (yes)
+    :REJECT - Too many defaults;
+    stop
+else (all passed)
+endif
+
+:Calculate Soft Score;
+
+fork
+    :Credit Score points;
+fork again
+    :Income Level points;
+fork again
+    :DTI Ratio points;
+fork again
+    :Account Balance points;
+fork again
+    :Employment Stability points;
+fork again
+    :Delinquency History points;
+fork again
+    :Collateral points;
+fork again
+    :Age points;
+end fork
+
+:Sum total points;
+
+:RAG Retrieval\n(bank rules + similar customers);
+
+:LLM Analysis\n(Groq / LLaMA 3.3);
+
+if (Score >= 200?) then (yes)
+    :APPROVE;
+elseif (Score >= 150?) then (yes)
+    :REFER FOR MANUAL REVIEW;
+else (no)
+    :REJECT;
+endif
+
+:Return decision + breakdown + LLM reasoning;
+
+stop
+
+@enduml
+
+
+'==============================================================
+' 10. COMPONENT DIAGRAM
+'==============================================================
+@startuml Component_Diagram
+
+title Component Diagram - RAG Bank Loan Evaluator
+
+package "Frontend" {
+    [Streamlit UI] as UI
+}
+
+package "Backend" {
+    [RAG Engine] as RE
+    [Rules Engine] as RUE
+    [LLM API] as LLMA
+}
+
+package "Data Storage" {
+    database "ChromaDB\nVector Store" as CDB
+    file "bank-rules.pdf" as PDF
+    file "customers.csv" as CSV
+}
+
+package "External Services" {
+    cloud "Groq API\n(LLaMA 3.3 70B)" as GROQ
+    cloud "HuggingFace\n(MiniLM-L6-v2)" as HF
+}
+
+UI --> RE
+RE --> RUE
+RE --> LLMA
+RE --> CDB
+LLMA --> GROQ
+CDB --> HF : embeddings
+CDB ..> PDF : indexed
+CDB ..> CSV : indexed
+
+@enduml

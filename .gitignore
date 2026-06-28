@@ -3,5 +3,6 @@ env/
 venv/
 .env
 chroma_db_bank_rules/
-src/bankingragdemo/__pycache__/
 chroma_db_customer_history/
+__pycache__/
+.pytest_cache/
